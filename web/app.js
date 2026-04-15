@@ -1,5 +1,6 @@
 /* ============================================================
-   NetRoute Simulator — Application Logic v2
+   NetRoute Simulator — Application Logic v3
+   Features: Zoom/Pan, Node Drag, Run-Again, Real-time Timer
    ============================================================ */
 
 (function () {
@@ -48,6 +49,34 @@
 
   let wasmReady = false;
   let sliderDebounce = null;
+
+  // Track the last algorithm run for "Run Again"
+  let lastAlgoRun = null;     // "kruskal" | "prim" | "dijkstra" | "compare" | null
+  let lastDijkstraSrc = null;
+  let lastDijkstraDest = null;
+
+  // Real-time timer state
+  let timerState = {
+    main: { running: false, startTime: 0, targetDuration: 0, elapsed: 0, label: "", actualNs: 0 },
+    compare: { running: false, startTime: 0, targetDuration: 0, elapsed: 0, label: "", actualNs: 0 }
+  };
+  let timerAnimFrame = null;
+
+  /* ----------------------------------------------------------
+     Zoom / Pan / Drag State
+     ---------------------------------------------------------- */
+  const viewState = {
+    main: { offsetX: 0, offsetY: 0, zoom: 1 },
+    compare: { offsetX: 0, offsetY: 0, zoom: 1 }
+  };
+
+  let isPanning = false;
+  let panStart = { x: 0, y: 0 };
+  let panTarget = null;     // "main" | "compare"
+
+  let isDraggingNode = false;
+  let dragNode = null;
+  let dragCanvas = null;
 
   /* ----------------------------------------------------------
      DOM References
@@ -132,6 +161,29 @@
   }
 
   /* ----------------------------------------------------------
+     Coordinate Transforms (zoom / pan support)
+     ---------------------------------------------------------- */
+  function getView(canvasId) {
+    return canvasId === "compare" ? viewState.compare : viewState.main;
+  }
+
+  // Convert normalized node coords (0..1) to screen pixel coords on a canvas
+  function nodeToScreen(node, canvas, view) {
+    const w = canvas.width, h = canvas.height;
+    const sx = node.x * w * view.zoom + view.offsetX;
+    const sy = node.y * h * view.zoom + view.offsetY;
+    return { x: sx, y: sy };
+  }
+
+  // Convert screen pixel coords back to normalized coords
+  function screenToNormalized(sx, sy, canvas, view) {
+    const w = canvas.width, h = canvas.height;
+    const nx = (sx - view.offsetX) / (w * view.zoom);
+    const ny = (sy - view.offsetY) / (h * view.zoom);
+    return { x: nx, y: ny };
+  }
+
+  /* ----------------------------------------------------------
      Canvas Rendering
      ---------------------------------------------------------- */
   function resizeCanvas(canvas) {
@@ -143,18 +195,14 @@
   }
 
   /**
-   * Draw the full graph.
-   * @param {HTMLCanvasElement} canvas
-   * @param {Array} highlighted   - fully-revealed highlighted edges
-   * @param {Object|null} filling - { edge, progress } the edge currently being filled
-   * @param {string} color        - highlight color
-   * @param {Object|null} packet  - { x, y } normalized packet position to draw
+   * Draw the full graph with zoom/pan support.
    */
-  function drawGraph(canvas, highlighted, filling, color, packet) {
+  function drawGraph(canvas, highlighted, filling, color, packet, canvasId) {
     resizeCanvas(canvas);
     const ctx = canvas.getContext("2d");
     const w = canvas.width;
     const h = canvas.height;
+    const view = getView(canvasId);
     ctx.clearRect(0, 0, w, h);
 
     if (nodes.length === 0) {
@@ -165,7 +213,8 @@
       return;
     }
 
-    const nr = Math.max(12, Math.min(24, 300 / nodes.length));
+    const baseNr = Math.max(12, Math.min(24, 300 / nodes.length));
+    const nr = baseNr * Math.min(view.zoom, 2); // scale node radius with zoom, cap at 2x
 
     // Build highlight set
     const hlSet = new Set();
@@ -181,16 +230,17 @@
       const a = nodes.find(n => n.id === edge.src);
       const b = nodes.find(n => n.id === edge.dest);
       if (!a || !b) return;
-      const ax = a.x * w, ay = a.y * h, bx = b.x * w, by = b.y * h;
+      const ap = nodeToScreen(a, canvas, view);
+      const bp = nodeToScreen(b, canvas, view);
       const isHl = hlSet.has(`${edge.src}-${edge.dest}`);
       ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
+      ctx.moveTo(ap.x, ap.y);
+      ctx.lineTo(bp.x, bp.y);
       ctx.strokeStyle = isHl ? color : "#d1d5db";
       ctx.lineWidth = isHl ? 3.5 : 1.2;
       ctx.stroke();
       // Weight
-      const mx = (ax + bx) / 2, my = (ay + by) / 2;
+      const mx = (ap.x + bp.x) / 2, my = (ap.y + bp.y) / 2;
       ctx.fillStyle = isHl ? color : "#b0b0b0";
       ctx.font = `bold ${isHl ? 12 : 10}px 'Segoe UI', sans-serif`;
       ctx.textAlign = "center";
@@ -204,12 +254,13 @@
       const a = nodes.find(n => n.id === fe.src);
       const b = nodes.find(n => n.id === fe.dest);
       if (a && b) {
-        const ax = a.x * w, ay = a.y * h, bx = b.x * w, by = b.y * h;
+        const ap = nodeToScreen(a, canvas, view);
+        const bp = nodeToScreen(b, canvas, view);
         const p = filling.progress; // 0..1
-        const cx = ax + (bx - ax) * p;
-        const cy = ay + (by - ay) * p;
+        const cx = ap.x + (bp.x - ap.x) * p;
+        const cy = ap.y + (bp.y - ap.y) * p;
         ctx.beginPath();
-        ctx.moveTo(ax, ay);
+        ctx.moveTo(ap.x, ap.y);
         ctx.lineTo(cx, cy);
         ctx.strokeStyle = color;
         ctx.lineWidth = 3.5;
@@ -224,7 +275,7 @@
 
     // --- Draw nodes ---
     nodes.forEach(node => {
-      const nx = node.x * w, ny = node.y * h;
+      const np = nodeToScreen(node, canvas, view);
       let isOnPath = false;
       if (highlighted) {
         highlighted.forEach(e => {
@@ -237,12 +288,12 @@
 
       if (isOnPath || isSrc || isDest) {
         ctx.beginPath();
-        ctx.arc(nx, ny, nr + 5, 0, Math.PI * 2);
+        ctx.arc(np.x, np.y, nr + 5, 0, Math.PI * 2);
         ctx.fillStyle = isSrc ? "#10b98133" : isDest ? "#ef444433" : color + "22";
         ctx.fill();
       }
       ctx.beginPath();
-      ctx.arc(nx, ny, nr, 0, Math.PI * 2);
+      ctx.arc(np.x, np.y, nr, 0, Math.PI * 2);
       ctx.fillStyle = "#ffffff";
       ctx.fill();
       ctx.strokeStyle = isSrc ? "#10b981" : isDest ? "#ef4444" : isOnPath ? color : "#1a1a1a";
@@ -252,25 +303,153 @@
       ctx.font = `bold ${nr * 0.65}px 'Segoe UI', sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(String(node.id), nx, ny);
+      ctx.fillText(String(node.id), np.x, np.y);
     });
 
     // --- Draw packet dot ---
     if (packet) {
-      const px = packet.x * w, py = packet.y * h;
+      const pp = { x: packet.x * w * view.zoom + view.offsetX,
+                   y: packet.y * h * view.zoom + view.offsetY };
       // Outer glow
       ctx.beginPath();
-      ctx.arc(px, py, 10, 0, Math.PI * 2);
+      ctx.arc(pp.x, pp.y, 10, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(255, 165, 0, 0.25)";
       ctx.fill();
       // Inner dot
       ctx.beginPath();
-      ctx.arc(px, py, 6, 0, Math.PI * 2);
+      ctx.arc(pp.x, pp.y, 6, 0, Math.PI * 2);
       ctx.fillStyle = "#ff8c00";
       ctx.fill();
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 2;
       ctx.stroke();
+    }
+
+    // --- Draw timer overlay ---
+    const ts = canvasId === "compare" ? timerState.compare : timerState.main;
+    if (ts.label) {
+      drawTimerOverlay(ctx, w, h, ts);
+    }
+  }
+
+  /* ----------------------------------------------------------
+     Timer Overlay Drawing
+     ---------------------------------------------------------- */
+  function drawTimerOverlay(ctx, w, h, ts) {
+    const padding = 12;
+    const boxW = 220;
+    const boxH = 52;
+    const x = w - boxW - padding;
+    const y = padding;
+
+    // Semi-transparent background
+    ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+    ctx.beginPath();
+    ctx.roundRect(x, y, boxW, boxH, 8);
+    ctx.fill();
+
+    // Label
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 11px 'Segoe UI', sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(ts.label, x + 10, y + 8);
+
+    // Progress bar background
+    const barX = x + 10;
+    const barY = y + 26;
+    const barW = boxW - 20;
+    const barH = 6;
+    ctx.fillStyle = "rgba(255,255,255,0.2)";
+    ctx.beginPath();
+    ctx.roundRect(barX, barY, barW, barH, 3);
+    ctx.fill();
+
+    // Progress bar fill
+    let progress = 0;
+    if (ts.running && ts.targetDuration > 0) {
+      progress = Math.min(1, (performance.now() - ts.startTime) / ts.targetDuration);
+    } else if (!ts.running && ts.targetDuration > 0) {
+      progress = 1;
+    }
+    const barColor = ts.running ? "#4ade80" : "#22c55e";
+    ctx.fillStyle = barColor;
+    ctx.beginPath();
+    ctx.roundRect(barX, barY, barW * progress, barH, 3);
+    ctx.fill();
+
+    // Time display
+    let displayTime;
+    if (ts.running) {
+      const elapsed = performance.now() - ts.startTime;
+      const scaledNs = (elapsed / ts.targetDuration) * ts.actualNs;
+      displayTime = formatNanoTime(scaledNs);
+    } else {
+      displayTime = formatNanoTime(ts.actualNs);
+    }
+    ctx.fillStyle = ts.running ? "#4ade80" : "#22c55e";
+    ctx.font = "bold 13px 'Cascadia Code', 'Fira Code', monospace";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(displayTime, barX, barY + 10);
+
+    // Status
+    const statusText = ts.running ? "RUNNING..." : "✓ DONE";
+    ctx.fillStyle = ts.running ? "#fbbf24" : "#22c55e";
+    ctx.font = "bold 10px 'Segoe UI', sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(statusText, x + boxW - 10, barY + 11);
+  }
+
+  function formatNanoTime(ns) {
+    if (ns < 1000) return ns.toFixed(2) + " ns";
+    if (ns < 1e6) return (ns / 1000).toFixed(2) + " µs";
+    if (ns < 1e9) return (ns / 1e6).toFixed(2) + " ms";
+    return (ns / 1e9).toFixed(2) + " s";
+  }
+
+  function startTimer(target, label, actualNs) {
+    const SCALE_FACTOR = 1e4;
+    // Exactly scale the time by 1e4 without clamping it, representing 100% "real time scaled" data.
+    const displayDuration = actualNs * SCALE_FACTOR / 1e6; // convert scaled ns to ms
+
+    const ts = target === "compare" ? timerState.compare : timerState.main;
+    ts.running = true;
+    ts.startTime = performance.now();
+    ts.targetDuration = displayDuration;
+    ts.actualNs = actualNs;
+    ts.label = label;
+    ts.elapsed = 0;
+
+    // Schedule timer end
+    const timerId = setTimeout(() => {
+      ts.running = false;
+      ts.elapsed = ts.actualNs;
+      redrawAll();
+    }, displayDuration);
+    animTimers.push(timerId);
+
+    // Start continuous redraw for smooth timer
+    if (!timerAnimFrame) {
+      function tickTimer() {
+        if (timerState.main.running || timerState.compare.running) {
+          redrawAll();
+          timerAnimFrame = requestAnimationFrame(tickTimer);
+        } else {
+          timerAnimFrame = null;
+          redrawAll(); // final draw
+        }
+      }
+      timerAnimFrame = requestAnimationFrame(tickTimer);
+    }
+  }
+
+  function clearTimers() {
+    timerState.main = { running: false, startTime: 0, targetDuration: 0, elapsed: 0, label: "", actualNs: 0 };
+    timerState.compare = { running: false, startTime: 0, targetDuration: 0, elapsed: 0, label: "", actualNs: 0 };
+    if (timerAnimFrame) {
+      cancelAnimationFrame(timerAnimFrame);
+      timerAnimFrame = null;
     }
   }
 
@@ -281,7 +460,7 @@
       ? { edge: mainEdgeQueue[0], progress: mainFillProgress }
       : null;
     drawGraph(mainCanvas, mHl, mFill, compareMode ? "#1a1a1a" : "#1a1a1a",
-              packetPos);
+              packetPos, "main");
 
     // Compare canvas (only if visible)
     if (compareMode) {
@@ -289,7 +468,7 @@
       const cFill = compareEdgeQueue.length > 0
         ? { edge: compareEdgeQueue[0], progress: compareFillProgress }
         : null;
-      drawGraph(compareCanvas, cHl, cFill, "#2d9cdb", packetPos);
+      drawGraph(compareCanvas, cHl, cFill, "#2d9cdb", packetPos, "compare");
     }
 
     updateStats();
@@ -323,13 +502,11 @@
     compareEdgeQueue = [];
     mainFillProgress = 0;
     compareFillProgress = 0;
+    clearTimers();
   }
 
   /**
    * Animate edges one-by-one with a smooth fill effect on one canvas.
-   * @param {Array} orderedEdges   - full list of result edges in order
-   * @param {"main"|"compare"} target
-   * @param {Function} onComplete
    */
   function animateEdgesOnCanvas(orderedEdges, target, onComplete) {
     const queue = [...orderedEdges];
@@ -355,6 +532,7 @@
         if (activeAnimCount <= 0) {
           activeAnimCount = 0;
           isAnimating = false;
+          updateRunAgainButton();
         }
         setAnimState();
         redrawAll();
@@ -401,6 +579,41 @@
   }
 
   /* ----------------------------------------------------------
+     Run Again Button
+     ---------------------------------------------------------- */
+  function updateRunAgainButton() {
+    const btnRunAgain = document.getElementById("btn-run-again");
+    if (!btnRunAgain) return;
+
+    if (lastAlgoRun && !isAnimating) {
+      btnRunAgain.style.display = "flex";
+      const names = {
+        kruskal: "🌳 Kruskal's MST",
+        prim: "🌲 Prim's MST",
+        dijkstra: "🛤️ Dijkstra's SPF",
+        compare: "📊 Kruskal vs Prim"
+      };
+      btnRunAgain.textContent = `🔄 Run Again: ${names[lastAlgoRun] || lastAlgoRun}`;
+    } else {
+      btnRunAgain.style.display = "none";
+    }
+  }
+
+  function runAgain() {
+    if (!lastAlgoRun || isAnimating) return;
+    switch (lastAlgoRun) {
+      case "kruskal": runKruskal(); break;
+      case "prim": runPrim(); break;
+      case "dijkstra":
+        if (lastDijkstraSrc !== null && lastDijkstraDest !== null) {
+          runDijkstraWithParams(lastDijkstraSrc, lastDijkstraDest);
+        }
+        break;
+      case "compare": runCompare(true); break;
+    }
+  }
+
+  /* ----------------------------------------------------------
      Random Graph Generation
      ---------------------------------------------------------- */
   function generateRandomGraph() {
@@ -414,6 +627,12 @@
     mainAnimEdges = []; compareAnimEdges = [];
     packetPathEdges = []; packetPos = null;
     nextNodeId = nodeCount;
+    lastAlgoRun = null;
+    updateRunAgainButton();
+
+    // Reset zoom/pan
+    viewState.main = { offsetX: 0, offsetY: 0, zoom: 1 };
+    viewState.compare = { offsetX: 0, offsetY: 0, zoom: 1 };
 
     const pad = 0.06;
     for (let i = 0; i < nodeCount; i++) {
@@ -509,11 +728,13 @@
   }
 
   function getNodeAt(canvas, x, y) {
-    const w = canvas.width, h = canvas.height;
-    const nr = Math.max(12, Math.min(24, 300 / nodes.length));
+    const view = canvas === compareCanvas ? viewState.compare : viewState.main;
+    const baseNr = Math.max(12, Math.min(24, 300 / nodes.length));
+    const nr = baseNr * Math.min(view.zoom, 2);
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
-      const dx = n.x * w - x, dy = n.y * h - y;
+      const sp = nodeToScreen(n, canvas, view);
+      const dx = sp.x - x, dy = sp.y - y;
       if (dx * dx + dy * dy <= (nr + 4) * (nr + 4)) return n;
     }
     return null;
@@ -521,14 +742,18 @@
 
   function handleCanvasClick(e) {
     if (isAnimating) return;
+    // If we were dragging a node, don't process as a click
+    if (isDraggingNode) return;
+
     const canvas = e.target;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    const view = canvas === compareCanvas ? viewState.compare : viewState.main;
 
     // --- Add Router ---
     if (addRouterMode) {
-      const nx = x / canvas.width, ny = y / canvas.height;
-      const n = { id: nextNodeId++, x: nx, y: ny };
+      const normalized = screenToNormalized(x, y, canvas, view);
+      const n = { id: nextNodeId++, x: normalized.x, y: normalized.y };
       nodes.push(n);
       log(`Added router #${n.id}`, "success");
       clearAlgoResults();
@@ -595,6 +820,23 @@
     pktHintEl.textContent = "Click two nodes on the canvas to select source & destination.";
     btnSendPacket.disabled = true;
     packetPos = null; packetPathEdges = [];
+
+    // Also clear Dijkstra path and any algorithm highlights
+    dijkstraPath = null;
+    mainAnimEdges = [];
+    mainEdgeQueue = [];
+    mainFillProgress = 0;
+    compareAnimEdges = [];
+    compareEdgeQueue = [];
+    compareFillProgress = 0;
+
+    // Reset panel title if it was showing Dijkstra
+    if (panelMainTitle.textContent.includes("Dijkstra") || panelMainTitle.textContent.includes("Packet")) {
+      panelMainTitle.textContent = "📡 Network Graph";
+      panelMainBadge.textContent = "";
+    }
+
+    clearTimers();
     redrawAll();
   }
 
@@ -603,6 +845,7 @@
     mainAnimEdges = []; compareAnimEdges = [];
     mainEdgeQueue = []; compareEdgeQueue = [];
     packetPathEdges = []; packetPos = null;
+    clearTimers();
   }
 
   /* ----------------------------------------------------------
@@ -615,6 +858,10 @@
     clearNodeSelection();
     addRouterMode = false; connectMode = false; connectFirst = null;
     btnAddRouter.classList.remove("active"); btnConnect.classList.remove("active");
+    lastAlgoRun = null;
+    updateRunAgainButton();
+    viewState.main = { offsetX: 0, offsetY: 0, zoom: 1 };
+    viewState.compare = { offsetX: 0, offsetY: 0, zoom: 1 };
     log("Canvas cleared", "info");
     redrawAll();
   }
@@ -635,23 +882,46 @@
   }
 
   /* ----------------------------------------------------------
+     Measure execution time accurately in Javascript by looping 10,000 times
+     ---------------------------------------------------------- */
+  function measureExecution(fn) {
+    const RUNS = 10000;
+    const start = performance.now();
+    for (let i = 0; i < RUNS; i++) {
+      fn();
+    }
+    const end = performance.now();
+    
+    // Return final result required for drawing
+    const result = fn();
+    
+    const elapsedMs = end - start;
+    const elapsedNs = (elapsedMs / RUNS) * 1e6; // convert ms to ns per run
+    return { result, elapsedNs };
+  }
+
+  /* ----------------------------------------------------------
      Run Kruskal (single mode)
      ---------------------------------------------------------- */
   function runKruskal() {
     if (isAnimating) return;
+    if (!wasmReady) { log("WASM not ready yet", "warn"); return; }
     exitCompareMode();
     stopAllAnimations();
     clearAlgoResults();
     panelMainTitle.textContent = "🌳 Kruskal's Algorithm";
     panelMainBadge.textContent = "MST";
+    lastAlgoRun = "kruskal";
+    updateRunAgainButton();
     redrawAll();
 
     if (!loadGraphToWasm()) return;
     try {
-      const r = NetRouteWasmBridge.runKruskal();
+      const { result: r, elapsedNs } = measureExecution(() => NetRouteWasmBridge.runKruskal());
       if (!r) { log("Kruskal null — disconnected?", "error"); return; }
       kruskalResult = r;
-      log(`▶ Kruskal MST: ${r.edgeCount} edges, cost = ${r.totalCost}`, "success");
+      log(`▶ Kruskal MST: ${r.edgeCount} edges, cost = ${r.totalCost} (${formatNanoTime(elapsedNs)})`, "success");
+      startTimer("main", "⏱ Kruskal's Algorithm", elapsedNs);
       animateEdgesOnCanvas(r.edges, "main", () => {
         log("✓ Kruskal complete", "success");
       });
@@ -663,19 +933,23 @@
      ---------------------------------------------------------- */
   function runPrim() {
     if (isAnimating) return;
+    if (!wasmReady) { log("WASM not ready yet", "warn"); return; }
     exitCompareMode();
     stopAllAnimations();
     clearAlgoResults();
     panelMainTitle.textContent = "🌲 Prim's Algorithm";
     panelMainBadge.textContent = "MST";
+    lastAlgoRun = "prim";
+    updateRunAgainButton();
     redrawAll();
 
     if (!loadGraphToWasm()) return;
     try {
-      const r = NetRouteWasmBridge.runPrim();
+      const { result: r, elapsedNs } = measureExecution(() => NetRouteWasmBridge.runPrim());
       if (!r) { log("Prim null — disconnected?", "error"); return; }
       primResult = r;
-      log(`▶ Prim MST: ${r.edgeCount} edges, cost = ${r.totalCost}`, "success");
+      log(`▶ Prim MST: ${r.edgeCount} edges, cost = ${r.totalCost} (${formatNanoTime(elapsedNs)})`, "success");
+      startTimer("main", "⏱ Prim's Algorithm", elapsedNs);
       animateEdgesOnCanvas(r.edges, "main", () => {
         log("✓ Prim complete", "success");
       });
@@ -685,30 +959,39 @@
   /* ----------------------------------------------------------
      Run Compare Mode (Kruskal + Prim simultaneously)
      ---------------------------------------------------------- */
-  function runCompare() {
+  function runCompare(forceRun = false) {
     if (isAnimating) return;
-    // If already in compare mode, just exit
-    if (compareMode) { toggleCompareMode(); return; }
-    // Enter compare mode and run both algorithms
-    toggleCompareMode();
+    if (!wasmReady) { log("WASM not ready yet", "warn"); return; }
+    // If already in compare mode and not forced, just exit
+    if (compareMode && forceRun !== true) { toggleCompareMode(); return; }
+    // If not in compare mode, enter it
+    if (!compareMode) { toggleCompareMode(); }
+    
     stopAllAnimations();
     activeAnimCount = 0;
     clearAlgoResults();
+    lastAlgoRun = "compare";
+    updateRunAgainButton();
     redrawAll();
 
     if (!loadGraphToWasm()) return;
     try {
-      const rk = NetRouteWasmBridge.runKruskal();
-      const rp = NetRouteWasmBridge.runPrim();
+      const { result: rk, elapsedNs: kNs } = measureExecution(() => NetRouteWasmBridge.runKruskal());
+      const { result: rp, elapsedNs: pNs } = measureExecution(() => NetRouteWasmBridge.runPrim());
       if (!rk || !rp) { log("One or both algorithms returned null", "error"); return; }
       kruskalResult = rk; primResult = rp;
-      log(`▶ Compare: Kruskal cost=${rk.totalCost}, Prim cost=${rp.totalCost}`, "success");
+      log(`▶ Compare: Kruskal cost=${rk.totalCost} (${formatNanoTime(kNs)}), Prim cost=${rp.totalCost} (${formatNanoTime(pNs)})`, "success");
+
+      // Start timers for both
+      startTimer("main", "⏱ Kruskal's Algorithm", kNs);
+      startTimer("compare", "⏱ Prim's Algorithm", pNs);
 
       // Animate both simultaneously
       let kDone = false, pDone = false;
       function checkBothDone() {
         if (kDone && pDone) {
           isAnimating = false;
+          updateRunAgainButton();
           log("✓ Comparison complete", "success");
         }
       }
@@ -722,6 +1005,7 @@
      ---------------------------------------------------------- */
   function openDijkstraModal() {
     if (isAnimating) return;
+    if (!wasmReady) { log("WASM not ready yet", "warn"); return; }
     exitCompareMode();
     modalSrc.value = packetSrcId !== null ? packetSrcId : "";
     modalDest.value = packetDestId !== null ? packetDestId : "";
@@ -734,6 +1018,10 @@
     const src  = parseInt(modalSrc.value, 10);
     const dest = parseInt(modalDest.value, 10);
     closeDijkstraModal();
+    runDijkstraWithParams(src, dest);
+  }
+
+  function runDijkstraWithParams(src, dest) {
     if (isNaN(src) || isNaN(dest)) { log("Invalid node IDs", "error"); return; }
     if (!nodes.some(n => n.id === src) || !nodes.some(n => n.id === dest)) {
       log(`Node ${src} or ${dest} not found`, "error"); return;
@@ -745,14 +1033,18 @@
     panelMainBadge.textContent = "SPF";
     packetSrcId = src; packetDestId = dest;
     pktSrcEl.textContent = src; pktDestEl.textContent = dest;
+    lastAlgoRun = "dijkstra";
+    lastDijkstraSrc = src;
+    lastDijkstraDest = dest;
+    updateRunAgainButton();
     redrawAll();
 
     if (!loadGraphToWasm()) return;
     try {
-      const r = NetRouteWasmBridge.runDijkstra(src, dest);
+      const { result: r, elapsedNs } = measureExecution(() => NetRouteWasmBridge.runDijkstra(src, dest));
       if (!r || !r.reachable) { log(`No path ${src} → ${dest}`, "warn"); return; }
       dijkstraPath = r.path;
-      log(`▶ Dijkstra: ${src} → ${dest} | ${r.pathLength} hops`, "success");
+      log(`▶ Dijkstra: ${src} → ${dest} | ${r.pathLength} hops (${formatNanoTime(elapsedNs)})`, "success");
 
       const pathEdges = [];
       for (let i = 0; i < r.path.length - 1; i++) {
@@ -762,6 +1054,7 @@
         pathEdges.push({ src: s, dest: d, weight: e ? e.weight : 0 });
       }
 
+      startTimer("main", "⏱ Dijkstra's SPF", elapsedNs);
       animateEdgesOnCanvas(pathEdges, "main", () => {
         log(`✓ Path: ${r.path.join(" → ")}`, "success");
       });
@@ -774,6 +1067,7 @@
   function sendPacket() {
     if (packetSrcId === null || packetDestId === null) return;
     if (isAnimating) return;
+    if (!wasmReady) { log("WASM not ready yet", "warn"); return; }
     exitCompareMode();
     stopAllAnimations();
     clearAlgoResults();
@@ -853,18 +1147,157 @@
   }
 
   /* ----------------------------------------------------------
+     Zoom / Pan / Drag Handlers
+     ---------------------------------------------------------- */
+  function setupCanvasInteraction(canvas, canvasId) {
+    let didDrag = false;
+
+    // --- Mouse wheel for zoom ---
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const view = getView(canvasId);
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+      const newZoom = Math.max(0.3, Math.min(5, view.zoom * zoomFactor));
+
+      // Zoom toward mouse position
+      const scale = newZoom / view.zoom;
+      view.offsetX = mx - (mx - view.offsetX) * scale;
+      view.offsetY = my - (my - view.offsetY) * scale;
+      view.zoom = newZoom;
+
+      redrawAll();
+    }, { passive: false });
+
+    // --- Mouse down ---
+    canvas.addEventListener("mousedown", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      didDrag = false;
+
+      // Check if clicking on a node → start drag
+      const node = getNodeAt(canvas, mx, my);
+      if (node && !addRouterMode && !connectMode) {
+        isDraggingNode = true;
+        dragNode = node;
+        dragCanvas = canvas;
+        canvas.style.cursor = "grabbing";
+        e.preventDefault();
+        return;
+      }
+
+      // Middle button or right button → start panning
+      if (e.button === 1 || e.button === 2 || (e.button === 0 && e.ctrlKey)) {
+        isPanning = true;
+        panStart = { x: e.clientX, y: e.clientY };
+        panTarget = canvasId;
+        canvas.style.cursor = "move";
+        e.preventDefault();
+      }
+    });
+
+    // --- Mouse move ---
+    canvas.addEventListener("mousemove", (e) => {
+      if (isDraggingNode && dragNode && dragCanvas === canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const view = getView(canvasId);
+        const normalized = screenToNormalized(mx, my, canvas, view);
+        dragNode.x = Math.max(0.02, Math.min(0.98, normalized.x));
+        dragNode.y = Math.max(0.02, Math.min(0.98, normalized.y));
+        didDrag = true;
+        redrawAll();
+        return;
+      }
+
+      if (isPanning && panTarget === canvasId) {
+        const view = getView(canvasId);
+        const dx = e.clientX - panStart.x;
+        const dy = e.clientY - panStart.y;
+        view.offsetX += dx;
+        view.offsetY += dy;
+        panStart = { x: e.clientX, y: e.clientY };
+        didDrag = true;
+        redrawAll();
+      }
+    });
+
+    // --- Mouse up ---
+    canvas.addEventListener("mouseup", (e) => {
+      if (isDraggingNode && dragCanvas === canvas) {
+        isDraggingNode = false;
+        dragNode = null;
+        dragCanvas = null;
+        canvas.style.cursor = "default";
+        // Prevent the click from firing if we actually dragged
+        if (didDrag) {
+          e.stopImmediatePropagation();
+        }
+        return;
+      }
+
+      if (isPanning && panTarget === canvasId) {
+        isPanning = false;
+        panTarget = null;
+        canvas.style.cursor = "default";
+      }
+    });
+
+    // --- Mouse leave: cancel drag/pan ---
+    canvas.addEventListener("mouseleave", () => {
+      if (isDraggingNode && dragCanvas === canvas) {
+        isDraggingNode = false;
+        dragNode = null;
+        dragCanvas = null;
+        canvas.style.cursor = "default";
+      }
+      if (isPanning && panTarget === canvasId) {
+        isPanning = false;
+        panTarget = null;
+        canvas.style.cursor = "default";
+      }
+    });
+
+    // Disable context menu on canvas
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    // Register click handler (for node selection etc.)
+    canvas.addEventListener("click", (e) => {
+      if (didDrag) {
+        didDrag = false;
+        return; // skip click after drag
+      }
+      handleCanvasClick(e);
+    });
+  }
+
+  /* ----------------------------------------------------------
      WASM Init
      ---------------------------------------------------------- */
+  function setAlgoButtonsEnabled(enabled) {
+    [btnKruskal, btnPrim, btnDijkstra, btnCompare, btnSendPacket].forEach(b => {
+      if (b) b.disabled = !enabled;
+    });
+  }
+
   async function initializeWasm() {
     log("Initializing WASM…", "info");
+    setAlgoButtonsEnabled(false);
     try {
       await NetRouteWasmBridge.initWasm();
       wasmReady = true;
+      setAlgoButtonsEnabled(true);
       log("WASM ready ✓", "success");
       const s = document.querySelector(".header__status");
       if (s) s.innerHTML = '<span class="header__status-dot"></span> Network Status: Optimal';
     } catch (err) {
       log(`WASM init failed: ${err.message}`, "error");
+      setAlgoButtonsEnabled(false);
       const s = document.querySelector(".header__status");
       if (s) { s.style.background = "#fef2f2"; s.style.color = "#ef4444";
         s.innerHTML = '<span class="header__status-dot" style="background:#ef4444"></span> WASM Error'; }
@@ -908,17 +1341,24 @@
     btnSendPacket.addEventListener("click", sendPacket);
     btnClearSel.addEventListener("click", clearNodeSelection);
 
+    // Run Again button
+    const btnRunAgain = document.getElementById("btn-run-again");
+    if (btnRunAgain) btnRunAgain.addEventListener("click", runAgain);
+
     modalRun.addEventListener("click", runDijkstra);
     modalCancel.addEventListener("click", closeDijkstraModal);
     modalOverlay.addEventListener("click", e => { if (e.target === modalOverlay) closeDijkstraModal(); });
 
-    mainCanvas.addEventListener("click", handleCanvasClick);
-    compareCanvas.addEventListener("click", handleCanvasClick);
+    // Setup zoom/pan/drag for both canvases
+    setupCanvasInteraction(mainCanvas, "main");
+    setupCanvasInteraction(compareCanvas, "compare");
 
     window.addEventListener("resize", () => redrawAll());
 
-    log("NetRoute Simulator v2.0", "info");
+    log("NetRoute Simulator v3.0", "info");
     log("—————————————————————————————", "info");
+    log("🔍 Scroll to zoom, Ctrl+drag or right-drag to pan", "info");
+    log("✋ Drag any node to reposition it", "info");
     initializeWasm();
     generateRandomGraph();
   }
