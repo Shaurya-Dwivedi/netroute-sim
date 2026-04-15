@@ -224,8 +224,8 @@ The live demo lets you:
 - [x] Packet Simulator
 - [x] Topology File Loader
 - [x] WASM bridge & Emscripten build
-- [ ] Frontend Canvas visualizer
-- [ ] Side-by-side animation comparison
+- [x] Frontend Canvas visualizer
+- [x] Side-by-side animation comparison
 - [ ] Host on GitHub Pages
 
 ---
