@@ -668,13 +668,175 @@
       }
     }
 
-    log(`Generated: ${nodes.length} nodes, ${edges.length} edges`, "success");
-    redrawAll();
-  }
+     log(`Generated: ${nodes.length} nodes, ${edges.length} edges`, "success");
+     redrawAll();
+   }
 
-  /* ----------------------------------------------------------
-     Compare Mode
-     ---------------------------------------------------------- */
+   /* ----------------------------------------------------------
+      Incremental Graph Updates
+      ---------------------------------------------------------- */
+   
+   /**
+    * Update node count: regenerate nodes and edges, but keep same positions if possible
+    */
+   function updateNodeCount() {
+     stopAllAnimations();
+     const newNodeCount = parseInt(sliderNodes.value, 10);
+     const oldNodeCount = nodes.length;
+     const density = parseInt(sliderDensity.value, 10) / 100;
+     const maxWeight = parseInt(sliderWeight.value, 10);
+
+     // Clear algorithm results but preserve node positions
+     kruskalResult = null;
+     primResult = null;
+     dijkstraPath = null;
+     mainAnimEdges = [];
+     compareAnimEdges = [];
+     packetPathEdges = [];
+     packetPos = null;
+     lastAlgoRun = null;
+     updateRunAgainButton();
+
+     // If adding nodes
+     if (newNodeCount > oldNodeCount) {
+       const pad = 0.06;
+       for (let i = oldNodeCount; i < newNodeCount; i++) {
+         nodes.push({
+           id: i,
+           x: pad + Math.random() * (1 - 2 * pad),
+           y: pad + Math.random() * (1 - 2 * pad),
+         });
+       }
+     }
+     // If removing nodes
+     else if (newNodeCount < oldNodeCount) {
+       nodes = nodes.filter(n => n.id < newNodeCount);
+       edges = edges.filter(e => e.src < newNodeCount && e.dest < newNodeCount);
+     }
+
+     // Regenerate edges for the current node set
+     edges = [];
+     for (let i = 0; i < newNodeCount; i++) {
+       for (let j = i + 1; j < newNodeCount; j++) {
+         if (Math.random() < density) {
+           edges.push({ src: i, dest: j, weight: Math.floor(Math.random() * maxWeight) + 1 });
+         }
+       }
+     }
+
+     // Ensure connectivity
+     const visited = new Set();
+     const queue = [0];
+     visited.add(0);
+     while (queue.length > 0) {
+       const cur = queue.shift();
+       edges.forEach(e => {
+         const o = e.src === cur ? e.dest : e.dest === cur ? e.src : -1;
+         if (o >= 0 && !visited.has(o)) {
+           visited.add(o);
+           queue.push(o);
+         }
+       });
+     }
+     for (let i = 0; i < newNodeCount; i++) {
+       if (!visited.has(i)) {
+         const t = [...visited][Math.floor(Math.random() * visited.size)];
+         edges.push({ src: t, dest: i, weight: Math.floor(Math.random() * maxWeight) + 1 });
+         visited.add(i);
+       }
+     }
+
+     nextNodeId = newNodeCount;
+     log(`Updated to ${nodes.length} nodes, ${edges.length} edges`, "success");
+     redrawAll();
+   }
+
+   /**
+    * Update density: keep all nodes, regenerate edges
+    */
+   function updateDensity() {
+     stopAllAnimations();
+     const nodeCount = nodes.length;
+     const density = parseInt(sliderDensity.value, 10) / 100;
+     const maxWeight = parseInt(sliderWeight.value, 10);
+
+     // Clear algorithm results but keep nodes
+     kruskalResult = null;
+     primResult = null;
+     dijkstraPath = null;
+     mainAnimEdges = [];
+     compareAnimEdges = [];
+     packetPathEdges = [];
+     packetPos = null;
+     lastAlgoRun = null;
+     updateRunAgainButton();
+
+     // Regenerate edges with new density
+     edges = [];
+     for (let i = 0; i < nodeCount; i++) {
+       for (let j = i + 1; j < nodeCount; j++) {
+         if (Math.random() < density) {
+           edges.push({ src: i, dest: j, weight: Math.floor(Math.random() * maxWeight) + 1 });
+         }
+       }
+     }
+
+     // Ensure connectivity
+     const visited = new Set();
+     const queue = [0];
+     visited.add(0);
+     while (queue.length > 0) {
+       const cur = queue.shift();
+       edges.forEach(e => {
+         const o = e.src === cur ? e.dest : e.dest === cur ? e.src : -1;
+         if (o >= 0 && !visited.has(o)) {
+           visited.add(o);
+           queue.push(o);
+         }
+       });
+     }
+     for (let i = 0; i < nodeCount; i++) {
+       if (!visited.has(i)) {
+         const t = [...visited][Math.floor(Math.random() * visited.size)];
+         edges.push({ src: t, dest: i, weight: Math.floor(Math.random() * maxWeight) + 1 });
+         visited.add(i);
+       }
+     }
+
+     log(`Updated density to ${(density * 100).toFixed(0)}%, now ${edges.length} edges`, "success");
+     redrawAll();
+   }
+
+   /**
+    * Update max weight: keep all nodes and edges, just reassign weights
+    */
+   function updateMaxWeight() {
+     stopAllAnimations();
+     const maxWeight = parseInt(sliderWeight.value, 10);
+
+     // Clear algorithm results (weights affect path costs)
+     kruskalResult = null;
+     primResult = null;
+     dijkstraPath = null;
+     mainAnimEdges = [];
+     compareAnimEdges = [];
+     packetPathEdges = [];
+     packetPos = null;
+     lastAlgoRun = null;
+     updateRunAgainButton();
+
+     // Reassign weights to all existing edges
+     edges.forEach(edge => {
+       edge.weight = Math.floor(Math.random() * maxWeight) + 1;
+     });
+
+     log(`Updated max weight to ${maxWeight}, reassigned all edge weights`, "success");
+     redrawAll();
+   }
+
+   /* ----------------------------------------------------------
+      Compare Mode
+      ---------------------------------------------------------- */
   function exitCompareMode() {
     if (!compareMode) return;
     compareMode = false;
@@ -1304,25 +1466,50 @@
     }
   }
 
-  /* ----------------------------------------------------------
-     Sliders — Live Generation
-     ---------------------------------------------------------- */
-  function setupSliders() {
-    function onChange() {
-      valNodes.textContent = sliderNodes.value;
-      valDensity.textContent = sliderDensity.value + "%";
-      valWeight.textContent = sliderWeight.value;
-      if (sliderDebounce) clearTimeout(sliderDebounce);
-      sliderDebounce = setTimeout(generateRandomGraph, 150);
-    }
-    sliderNodes.addEventListener("input", onChange);
-    sliderDensity.addEventListener("input", onChange);
-    sliderWeight.addEventListener("input", onChange);
+   /* ----------------------------------------------------------
+      Sliders — Live Generation
+      ---------------------------------------------------------- */
+   function setupSliders() {
+     // Track previous values to detect which slider changed
+     let prevNodeCount = parseInt(sliderNodes.value, 10);
+     let prevDensity = parseInt(sliderDensity.value, 10);
+     let prevMaxWeight = parseInt(sliderWeight.value, 10);
 
-    sliderSpeed.addEventListener("input", () => {
-      valSpeed.textContent = sliderSpeed.value + "×";
-    });
-  }
+     function onSliderChange() {
+       const curNodeCount = parseInt(sliderNodes.value, 10);
+       const curDensity = parseInt(sliderDensity.value, 10);
+       const curMaxWeight = parseInt(sliderWeight.value, 10);
+
+       // Update display values
+       valNodes.textContent = sliderNodes.value;
+       valDensity.textContent = sliderDensity.value + "%";
+       valWeight.textContent = sliderWeight.value;
+
+       if (sliderDebounce) clearTimeout(sliderDebounce);
+
+       // Determine which slider changed and call appropriate update function
+       sliderDebounce = setTimeout(() => {
+         if (curNodeCount !== prevNodeCount) {
+           prevNodeCount = curNodeCount;
+           updateNodeCount();
+         } else if (curDensity !== prevDensity) {
+           prevDensity = curDensity;
+           updateDensity();
+         } else if (curMaxWeight !== prevMaxWeight) {
+           prevMaxWeight = curMaxWeight;
+           updateMaxWeight();
+         }
+       }, 150);
+     }
+
+     sliderNodes.addEventListener("input", onSliderChange);
+     sliderDensity.addEventListener("input", onSliderChange);
+     sliderWeight.addEventListener("input", onSliderChange);
+
+     sliderSpeed.addEventListener("input", () => {
+       valSpeed.textContent = sliderSpeed.value + "×";
+     });
+   }
 
   /* ----------------------------------------------------------
      Boot
