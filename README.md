@@ -163,7 +163,7 @@ EDGES 9
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/netroute-sim.git
+git clone https://github.com/Shaurya-Dwivedi/netroute-sim.git
 cd netroute-sim
 
 # Build
@@ -196,7 +196,7 @@ python3 -m http.server 8080
 
 ## Live Demo [ To be hosted after frontend completion ]
 
-> **[netroute-sim.github.io](https://YOUR_USERNAME.github.io/netroute-sim)** *(hosted on GitHub Pages)*
+> **[netroute-sim.github.io](https://shaurya-dwivedi.github.io/netroute-sim/)** *(hosted on GitHub Pages)*
 
 The live demo lets you:
 - Load a preset network or upload your own topology file
