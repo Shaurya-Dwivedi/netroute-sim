@@ -21,6 +21,7 @@
   // Animation — progressive reveal
   let animTimers = []; // active requestAnimationFrame / interval IDs
   let isAnimating = false;
+  let isPaused = false;  // true while animation is paused mid-run
   let activeAnimCount = 0; // number of concurrent animations running
   let mainAnimEdges = []; // edges revealed so far on main canvas
   let compareAnimEdges = []; // edges revealed so far on compare canvas
@@ -636,16 +637,91 @@
       packetAnimFrame = null;
     }
     isAnimating = false;
+    isPaused = false;
     activeAnimCount = 0;
+    mainAnimEdges = [];
+    compareAnimEdges = [];
     mainEdgeQueue = [];
     compareEdgeQueue = [];
     mainFillProgress = 0;
     compareFillProgress = 0;
+    packetPos = null;
+    _pauseSnapshots = [];
     clearTimers();
+    updateSimControlButtons();
+  }
+
+  /* ----------------------------------------------------------
+     Pause / Resume / Stop Controls
+     ---------------------------------------------------------- */
+
+  // Snapshot of each running edge-fill animation so we can resume it
+  let _pauseSnapshots = []; // [{ resume: fn }]
+
+  function pauseSimulation() {
+    if (!isAnimating || isPaused) return;
+    isPaused = true;
+
+    // Cancel every pending timer/rAF so animation freezes
+    animTimers.forEach((id) => {
+      cancelAnimationFrame(id);
+      clearTimeout(id);
+    });
+    animTimers = [];
+
+    if (packetAnimFrame) {
+      cancelAnimationFrame(packetAnimFrame);
+      packetAnimFrame = null;
+    }
+
+    // Also freeze the visual timer
+    if (timerAnimFrame) {
+      cancelAnimationFrame(timerAnimFrame);
+      timerAnimFrame = null;
+    }
+
+    log("⏸ Simulation paused", "info");
+    updateSimControlButtons();
+    redrawAll();
+  }
+
+  function resumeSimulation() {
+    if (!isPaused) return;
+    isPaused = false;
+
+    // Restart edge-fill animations from their current queue position
+    const resumeFns = _pauseSnapshots.slice();
+    _pauseSnapshots = [];
+    if (resumeFns.length > 0) {
+      resumeFns.forEach((fn) => fn());
+    } else {
+      // Fallback: if no snapshots (e.g. packet dot was paused), re-evaluate state
+      isAnimating = false;
+      updateRunAgainButton();
+    }
+
+    log("▶ Simulation resumed", "info");
+    updateSimControlButtons();
+  }
+
+  function updateSimControlButtons() {
+    const btnPause = document.getElementById("btn-pause-sim");
+    const btnStop  = document.getElementById("btn-stop-sim");
+    if (!btnPause || !btnStop) return;
+
+    if (isAnimating || isPaused) {
+      btnPause.style.display = "flex";
+      btnStop.style.display  = "flex";
+      btnPause.textContent = isPaused ? "▶ RESUME_SIM" : "⏸ PAUSE_SIM";
+    } else {
+      btnPause.style.display = "none";
+      btnStop.style.display  = "none";
+    }
   }
 
   /**
    * Animate edges one-by-one with a smooth fill effect on one canvas.
+   * Respects isPaused — registers a resume callback via _pauseSnapshots.
    */
   function animateEdgesOnCanvas(orderedEdges, target, onComplete) {
     const queue = [...orderedEdges];
@@ -666,12 +742,19 @@
     }
 
     function fillNextEdge() {
+      // ---- PAUSED: register ourselves as a resume callback ----
+      if (isPaused) {
+        _pauseSnapshots.push(fillNextEdge);
+        return;
+      }
+
       if (queue.length === 0) {
         activeAnimCount--;
         if (activeAnimCount <= 0) {
           activeAnimCount = 0;
           isAnimating = false;
           updateRunAgainButton();
+          updateSimControlButtons();
         }
         setAnimState();
         redrawAll();
@@ -683,6 +766,15 @@
       const startTime = performance.now();
 
       function tick(now) {
+        // ---- PAUSED mid-fill: freeze and save resume point ----
+        if (isPaused) {
+          _pauseSnapshots.push(() => {
+            // restart this edge's fill from the beginning
+            fillNextEdge();
+          });
+          return;
+        }
+
         const elapsed = now - startTime;
         fillProg = Math.min(1, elapsed / fillDur);
         setAnimState();
@@ -717,6 +809,7 @@
 
     isAnimating = true;
     activeAnimCount++;
+    updateSimControlButtons();
     fillNextEdge();
   }
 
@@ -727,7 +820,7 @@
     const btnRunAgain = document.getElementById("btn-run-again");
     if (!btnRunAgain) return;
 
-    if (lastAlgoRun && !isAnimating) {
+    if (lastAlgoRun && !isAnimating && !isPaused) {
       btnRunAgain.style.display = "flex";
       const names = {
         kruskal: "> KRUSKAL'S MST",
@@ -1740,11 +1833,24 @@
     if (totalSegments <= 0) return;
 
     isAnimating = true;
+    updateSimControlButtons();
     const segmentDuration = getEdgeFillDuration() * 1.5; // slightly slower for visibility
     let currentSeg = 0;
     let segStart = performance.now();
+    let pausedAt = 0; // elapsed ms when paused, for seamless resume
 
     function tick(now) {
+      // Handle pause: freeze the dot in place
+      if (isPaused) {
+        pausedAt = Math.min(now - segStart, segmentDuration);
+        _pauseSnapshots.push(() => {
+          // On resume, shift segStart so elapsed continues from pausedAt
+          segStart = performance.now() - pausedAt;
+          packetAnimFrame = requestAnimationFrame(tick);
+        });
+        return;
+      }
+
       const elapsed = now - segStart;
       let t = Math.min(1, elapsed / segmentDuration);
 
@@ -1752,6 +1858,7 @@
       const destNode = nodes.find((n) => n.id === path[currentSeg + 1]);
       if (!srcNode || !destNode) {
         isAnimating = false;
+        updateSimControlButtons();
         return;
       }
 
@@ -1770,6 +1877,7 @@
         if (currentSeg >= totalSegments) {
           packetPos = null;
           isAnimating = false;
+          updateSimControlButtons();
           log(
             `✓ Packet delivered to node ${path[path.length - 1]}!`,
             "success",
@@ -1778,6 +1886,7 @@
           return;
         }
         segStart = now;
+        pausedAt = 0;
       }
 
       packetAnimFrame = requestAnimationFrame(tick);
@@ -2119,6 +2228,24 @@
     // Run Again button
     const btnRunAgain = document.getElementById("btn-run-again");
     if (btnRunAgain) btnRunAgain.addEventListener("click", runAgain);
+
+    // Sim control buttons (pause / stop)
+    const btnPauseSim = document.getElementById("btn-pause-sim");
+    const btnStopSim  = document.getElementById("btn-stop-sim");
+    if (btnPauseSim) {
+      btnPauseSim.addEventListener("click", () => {
+        if (isPaused) resumeSimulation();
+        else pauseSimulation();
+      });
+    }
+    if (btnStopSim) {
+      btnStopSim.addEventListener("click", () => {
+        stopAllAnimations();
+        // Keep any already-revealed edges visible
+        log("⏹ Simulation stopped", "info");
+        redrawAll();
+      });
+    }
 
     modalRun.addEventListener("click", runDijkstra);
     modalCancel.addEventListener("click", closeDijkstraModal);

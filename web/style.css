@@ -361,6 +361,37 @@ input[type="range"]::-webkit-slider-thumb:hover {
   color: var(--radar-cyan);
 }
 
+/* --- Pause / Resume button (amber) --- */
+.btn--pause {
+  background: transparent;
+  color: #F59E0B;
+  border-color: #F59E0B;
+  animation: pausePulse 1.4s ease-in-out infinite;
+}
+
+.btn--pause:hover {
+  background: #F59E0B;
+  color: var(--bg-void);
+  animation: none;
+}
+
+@keyframes pausePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245,158,11,0); }
+  50%       { box-shadow: 0 0 0 4px rgba(245,158,11,0.25); }
+}
+
+/* --- Stop button (red) --- */
+.btn--stop {
+  background: transparent;
+  color: var(--alert-red);
+  border-color: var(--alert-red);
+}
+
+.btn--stop:hover {
+  background: var(--alert-red);
+  color: var(--bg-void);
+}
+
 .btn-group {
   display: flex;
   flex-direction: column;
