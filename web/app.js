@@ -230,8 +230,8 @@
       return;
     }
 
-    const baseNr = Math.max(12, Math.min(24, 300 / nodes.length));
-    const nr = baseNr * Math.min(view.zoom, 2); // scale node radius with zoom, cap at 2x
+    const baseNr = 16; // fixed radius — stays constant regardless of node count
+    const nr = baseNr * Math.min(view.zoom, 2); // scale with zoom, cap at 2x
 
     // Build highlight set
     const hlSet = new Set();
@@ -2069,10 +2069,9 @@
      ---------------------------------------------------------- */
   function init() {
     // --- Theme: default light, persist via localStorage ---
-    const savedTheme = localStorage.getItem("netroute-theme");
     const themeToggleBtn = document.getElementById("btn-theme-toggle");
 
-    function applyTheme(theme) {
+    function applyThemeClass(theme) {
       if (theme === "light") {
         document.body.classList.add("light-theme");
         if (themeToggleBtn) themeToggleBtn.textContent = "[☽] DARK_MODE";
@@ -2081,16 +2080,17 @@
         if (themeToggleBtn) themeToggleBtn.textContent = "[☼] LIGHT_MODE";
       }
       localStorage.setItem("netroute-theme", theme);
-      redrawAll();
     }
 
-    // Default to light if no preference saved
-    applyTheme(savedTheme || "light");
+    // Apply saved theme (or default to light) — NO redrawAll here, canvas not ready yet
+    applyThemeClass(localStorage.getItem("netroute-theme") || "light");
 
+    // Wire toggle button — redrawAll is safe after init completes
     if (themeToggleBtn) {
       themeToggleBtn.addEventListener("click", () => {
-        const isCurrentlyLight = document.body.classList.contains("light-theme");
-        applyTheme(isCurrentlyLight ? "dark" : "light");
+        const next = document.body.classList.contains("light-theme") ? "dark" : "light";
+        applyThemeClass(next);
+        redrawAll();
       });
     }
 
