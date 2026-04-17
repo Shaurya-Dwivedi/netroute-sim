@@ -795,6 +795,41 @@
       });
     }
 
+    // --- Force-relaxation to prevent node overlap ---
+    // Minimum separation in normalized coords, scaled by node count
+    const minSep = Math.min(0.32, 1.8 / Math.sqrt(nodeCount));
+    const iterations = Math.min(200, nodeCount * 6);
+    for (let iter = 0; iter < iterations; iter++) {
+      let settled = true;
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          let dx = nodes[j].x - nodes[i].x;
+          let dy = nodes[j].y - nodes[i].y;
+          let dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < minSep && dist > 0) {
+            settled = false;
+            const overlap = (minSep - dist) / 2;
+            const nx = dx / dist;
+            const ny = dy / dist;
+            // Push nodes apart symmetrically
+            nodes[i].x -= nx * overlap * 0.55;
+            nodes[i].y -= ny * overlap * 0.55;
+            nodes[j].x += nx * overlap * 0.55;
+            nodes[j].y += ny * overlap * 0.55;
+          } else if (dist === 0) {
+            // Identical positions — nudge randomly
+            settled = false;
+            nodes[j].x += (Math.random() - 0.5) * minSep;
+            nodes[j].y += (Math.random() - 0.5) * minSep;
+          }
+        }
+        // Clamp back into padded area
+        nodes[i].x = Math.max(pad, Math.min(1 - pad, nodes[i].x));
+        nodes[i].y = Math.max(pad, Math.min(1 - pad, nodes[i].y));
+      }
+      if (settled) break;
+    }
+
     for (let i = 0; i < nodeCount; i++) {
       for (let j = i + 1; j < nodeCount; j++) {
         if (Math.random() < density) {
@@ -1963,34 +1998,6 @@
 
     sliderSpeed.addEventListener("input", () => {
       valSpeed.textContent = sliderSpeed.value + "×";
-    });
-  }
-
-  /* ----------------------------------------------------------
-     Theme Toggle — persisted in localStorage
-     ---------------------------------------------------------- */
-  const btnThemeToggle = document.getElementById("btn-theme-toggle");
-
-  function applyTheme(isLight) {
-    document.body.classList.toggle("light-theme", isLight);
-    if (btnThemeToggle) {
-      btnThemeToggle.textContent = isLight ? "[☾] DARK_MODE" : "[☼] LIGHT_MODE";
-    }
-  }
-
-  // Restore saved theme on load
-  (function restoreSavedTheme() {
-    const saved = localStorage.getItem("netroute-theme");
-    // Default is dark; only apply light if explicitly saved
-    applyTheme(saved === "light");
-  })();
-
-  if (btnThemeToggle) {
-    btnThemeToggle.addEventListener("click", () => {
-      const isNowLight = document.body.classList.toggle("light-theme");
-      localStorage.setItem("netroute-theme", isNowLight ? "light" : "dark");
-      applyTheme(isNowLight);
-      redrawAll();
     });
   }
 
