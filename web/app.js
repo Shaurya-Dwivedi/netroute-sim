@@ -1135,6 +1135,7 @@
     compareAnimEdges = [];
     kruskalResult = null;
     primResult = null;
+    clearTimers();
     setTimeout(redrawAll, 50);
   }
 
@@ -1157,6 +1158,7 @@
       compareAnimEdges = [];
       kruskalResult = null;
       primResult = null;
+      clearTimers();
       log("Compare mode OFF", "info");
     }
     // Let layout settle, then redraw
