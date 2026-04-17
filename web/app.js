@@ -1321,22 +1321,77 @@
   }
 
   /* ----------------------------------------------------------
-     Measure execution time accurately in Javascript by looping 10,000 times
+     Benchmark helpers
+
+     measureExecution(fn)
+       Single-algorithm benchmark.  A brief warmup pass is run first
+       so the WASM heap allocator's free-lists are pre-populated before
+       we start the timed section.
+
+     measureBoth(fnA, fnB)
+       Fair head-to-head benchmark.  Both functions are called in an
+       A→B alternating pattern inside the SAME loop so they always see
+       an IDENTICAL allocator state at the start of every iteration.
+       This eliminates the ordering bias that made the second algorithm
+       appear systematically faster because it inherited recycled free-
+       blocks from the first algorithm's tear-down.
      ---------------------------------------------------------- */
   function measureExecution(fn) {
-    const RUNS = 10000;
-    const start = performance.now();
-    for (let i = 0; i < RUNS; i++) {
-      fn();
-    }
-    const end = performance.now();
-
-    // Return final result required for drawing
+    // Cold call — gives us the real result for drawing
     const result = fn();
 
-    const elapsedMs = end - start;
-    const elapsedNs = (elapsedMs / RUNS) * 1e6; // convert ms to ns per run
+    // Warmup: let the allocator settle
+    const WARMUP = 60;
+    for (let i = 0; i < WARMUP; i++) fn();
+
+    // Timed section
+    const RUNS = 400;
+    const start = performance.now();
+    for (let i = 0; i < RUNS; i++) fn();
+    const elapsedNs = ((performance.now() - start) / RUNS) * 1e6;
+
     return { result, elapsedNs };
+  }
+
+  /**
+   * Interleaved dual benchmark — the ONLY correct way to compare two
+   * WASM routines that share the same heap allocator.
+   *
+   * Returns { resultA, resultB, nsA, nsB }
+   */
+  function measureBoth(fnA, fnB) {
+    // Cold calls to get results for drawing
+    const resultA = fnA();
+    const resultB = fnB();
+
+    // Warmup both together so the allocator sees the full mixed pattern
+    const WARMUP = 60;
+    for (let i = 0; i < WARMUP; i++) { fnA(); fnB(); }
+
+    // Timed interleaved loop — A and B alternate in the same iteration
+    // so their allocator state is as close to identical as possible
+    const RUNS = 300;
+    let totalA = 0;
+    let totalB = 0;
+
+    for (let i = 0; i < RUNS; i++) {
+      // Measure A
+      const t0 = performance.now();
+      fnA();
+      totalA += performance.now() - t0;
+
+      // Measure B (same allocator state as after an A teardown)
+      const t1 = performance.now();
+      fnB();
+      totalB += performance.now() - t1;
+    }
+
+    return {
+      resultA,
+      resultB,
+      nsA: (totalA / RUNS) * 1e6,
+      nsB: (totalB / RUNS) * 1e6,
+    };
   }
 
   /* ----------------------------------------------------------
@@ -1449,11 +1504,11 @@
 
     if (!loadGraphToWasm()) return;
     try {
-      const { result: rk, elapsedNs: kNs } = measureExecution(() =>
-        NetRouteWasmBridge.runKruskal(),
-      );
-      const { result: rp, elapsedNs: pNs } = measureExecution(() =>
-        NetRouteWasmBridge.runPrim(),
+      // Use the interleaved benchmark so both algorithms see the same
+      // WASM heap allocator state — eliminates ordering bias entirely
+      const { resultA: rk, resultB: rp, nsA: kNs, nsB: pNs } = measureBoth(
+        () => NetRouteWasmBridge.runKruskal(),
+        () => NetRouteWasmBridge.runPrim(),
       );
       if (!rk || !rp) {
         log("One or both algorithms returned null", "error");
@@ -1465,6 +1520,26 @@
         `▶ Compare: Kruskal cost=${rk.totalCost} (${formatNanoTime(kNs)}), Prim cost=${rp.totalCost} (${formatNanoTime(pNs)})`,
         "success",
       );
+      // Contextual explanation of the timing result
+      const faster = kNs <= pNs ? "Kruskal" : "Prim";
+      const ratio = Math.max(kNs, pNs) / Math.min(kNs, pNs);
+      const density = edges.length / (nodes.length * (nodes.length - 1) / 2);
+      const graphType = density > 0.5 ? "dense" : "sparse";
+      log(
+        `  ℹ ${faster} faster by ${ratio.toFixed(1)}×  [Kruskal: O(E·logE) sort | Prim: O(E·logV) heap] — ${graphType} graph (${(density*100).toFixed(0)}% density)`,
+        "info",
+      );
+      if (kNs > pNs && density < 0.5) {
+        log(
+          `  ℹ Even sparse: Kruskal's qsort + getAllEdges() malloc always adds overhead Prim avoids`,
+          "info",
+        );
+      } else if (kNs > pNs) {
+        log(
+          `  ℹ Dense graph — Kruskal's qsort(E·logE) dominates; Prim's heap is O(E·logV) which is tighter`,
+          "info",
+        );
+      }
 
       // Start timers for both
       startTimer("main", "⏱ Kruskal's Algorithm", kNs);
@@ -1613,7 +1688,7 @@
       }
       packetPathEdges = pathEdges;
 
-      log(`📦 Sending packet: ${r.path.join(" → ")}`, "success");
+      log(`Sending packet: ${r.path.join(" → ")}`, "success");
 
       // First animate the path edges, then move the packet dot along
       animateEdgesOnCanvas(pathEdges, "main", () => {
@@ -1655,7 +1730,7 @@
       redrawAll();
 
       if (elapsed >= segmentDuration) {
-        log(`  📦 arrived at node ${path[currentSeg + 1]}`, "info");
+        log(`  Packet arrived at node ${path[currentSeg + 1]}`, "info");
         currentSeg++;
         if (currentSeg >= totalSegments) {
           packetPos = null;
@@ -1891,15 +1966,30 @@
     });
   }
 
+  /* ----------------------------------------------------------
+     Theme Toggle — persisted in localStorage
+     ---------------------------------------------------------- */
   const btnThemeToggle = document.getElementById("btn-theme-toggle");
+
+  function applyTheme(isLight) {
+    document.body.classList.toggle("light-theme", isLight);
+    if (btnThemeToggle) {
+      btnThemeToggle.textContent = isLight ? "[☾] DARK_MODE" : "[☼] LIGHT_MODE";
+    }
+  }
+
+  // Restore saved theme on load
+  (function restoreSavedTheme() {
+    const saved = localStorage.getItem("netroute-theme");
+    // Default is dark; only apply light if explicitly saved
+    applyTheme(saved === "light");
+  })();
+
   if (btnThemeToggle) {
     btnThemeToggle.addEventListener("click", () => {
-      document.body.classList.toggle("light-theme");
-      btnThemeToggle.textContent = document.body.classList.contains(
-        "light-theme",
-      )
-        ? "[☾] DARK_MODE"
-        : "[☼] LIGHT_MODE";
+      const isNowLight = document.body.classList.toggle("light-theme");
+      localStorage.setItem("netroute-theme", isNowLight ? "light" : "dark");
+      applyTheme(isNowLight);
       redrawAll();
     });
   }
