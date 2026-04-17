@@ -6,7 +6,7 @@
 ![Frontend](https://img.shields.io/badge/Frontend-HTML%2FCSS%2FJS-orange?style=flat-square)
 ![WASM](https://img.shields.io/badge/Bridge-WebAssembly-purple?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
-![Status](https://img.shields.io/badge/Status-In%20Development-yellow?style=flat-square)
+![Status](https://img.shields.io/badge/Status-Released-green?style=flat-square)
 
 ---
 
