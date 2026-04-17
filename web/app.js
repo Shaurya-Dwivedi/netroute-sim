@@ -646,7 +646,6 @@
     mainFillProgress = 0;
     compareFillProgress = 0;
     packetPos = null;
-    _pauseSnapshots = [];
     clearTimers();
     updateSimControlButtons();
   }
@@ -655,26 +654,12 @@
      Pause / Resume / Stop Controls
      ---------------------------------------------------------- */
 
-  // Snapshot of each running edge-fill animation so we can resume it
-  let _pauseSnapshots = []; // [{ resume: fn }]
-
   function pauseSimulation() {
     if (!isAnimating || isPaused) return;
     isPaused = true;
 
-    // Cancel every pending timer/rAF so animation freezes
-    animTimers.forEach((id) => {
-      cancelAnimationFrame(id);
-      clearTimeout(id);
-    });
-    animTimers = [];
-
-    if (packetAnimFrame) {
-      cancelAnimationFrame(packetAnimFrame);
-      packetAnimFrame = null;
-    }
-
-    // Also freeze the visual timer
+    // Only freeze the visual clock overlay — the animation loops stay alive
+    // and idle-spin, keeping their internal state intact for seamless resume.
     if (timerAnimFrame) {
       cancelAnimationFrame(timerAnimFrame);
       timerAnimFrame = null;
@@ -688,18 +673,6 @@
   function resumeSimulation() {
     if (!isPaused) return;
     isPaused = false;
-
-    // Restart edge-fill animations from their current queue position
-    const resumeFns = _pauseSnapshots.slice();
-    _pauseSnapshots = [];
-    if (resumeFns.length > 0) {
-      resumeFns.forEach((fn) => fn());
-    } else {
-      // Fallback: if no snapshots (e.g. packet dot was paused), re-evaluate state
-      isAnimating = false;
-      updateRunAgainButton();
-    }
-
     log("▶ Simulation resumed", "info");
     updateSimControlButtons();
   }
@@ -721,7 +694,7 @@
 
   /**
    * Animate edges one-by-one with a smooth fill effect on one canvas.
-   * Respects isPaused — registers a resume callback via _pauseSnapshots.
+   * Respects isPaused — loops idle-spin and auto-resume when flag clears.
    */
   function animateEdgesOnCanvas(orderedEdges, target, onComplete) {
     const queue = [...orderedEdges];
@@ -742,9 +715,10 @@
     }
 
     function fillNextEdge() {
-      // ---- PAUSED: register ourselves as a resume callback ----
+      // PAUSED between edges: retry after a short delay (keeps timer alive)
       if (isPaused) {
-        _pauseSnapshots.push(fillNextEdge);
+        const tid = setTimeout(fillNextEdge, 50);
+        animTimers.push(tid);
         return;
       }
 
@@ -763,19 +737,18 @@
       }
 
       const edge = queue[0];
-      const startTime = performance.now();
+      let fillStart = performance.now(); // mutable — reset on resume
 
       function tick(now) {
-        // ---- PAUSED mid-fill: freeze and save resume point ----
+        // PAUSED mid-fill: advance fillStart so progress stays frozen
         if (isPaused) {
-          _pauseSnapshots.push(() => {
-            // restart this edge's fill from the beginning
-            fillNextEdge();
-          });
+          fillStart = now - fillProg * fillDur;
+          const id = requestAnimationFrame(tick);
+          animTimers.push(id);
           return;
         }
 
-        const elapsed = now - startTime;
+        const elapsed = now - fillStart;
         fillProg = Math.min(1, elapsed / fillDur);
         setAnimState();
         redrawAll();
@@ -1837,17 +1810,11 @@
     const segmentDuration = getEdgeFillDuration() * 1.5; // slightly slower for visibility
     let currentSeg = 0;
     let segStart = performance.now();
-    let pausedAt = 0; // elapsed ms when paused, for seamless resume
-
     function tick(now) {
-      // Handle pause: freeze the dot in place
+      // PAUSED: keep segStart rolling so position stays frozen on resume
       if (isPaused) {
-        pausedAt = Math.min(now - segStart, segmentDuration);
-        _pauseSnapshots.push(() => {
-          // On resume, shift segStart so elapsed continues from pausedAt
-          segStart = performance.now() - pausedAt;
-          packetAnimFrame = requestAnimationFrame(tick);
-        });
+        segStart = now - Math.min(now - segStart, segmentDuration);
+        packetAnimFrame = requestAnimationFrame(tick);
         return;
       }
 
@@ -1886,7 +1853,6 @@
           return;
         }
         segStart = now;
-        pausedAt = 0;
       }
 
       packetAnimFrame = requestAnimationFrame(tick);
