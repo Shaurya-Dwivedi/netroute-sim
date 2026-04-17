@@ -199,16 +199,17 @@ python3 -m http.server 8080
 > **[netroute-sim.github.io](https://shaurya-dwivedi.github.io/netroute-sim/)** *(hosted on GitHub Pages)*
 
 The live demo lets you:
-- Load a preset network or upload your own topology file
+- Generate random graph
 - Watch **Kruskal's** and **Prim's** build the MST edge by edge, animated
 - Simulate a packet delivery and watch **Dijkstra's** trace the shortest path
-- Compare the total MST cost vs the shortest path cost in real time
 
 ---
 
-## 📸 Screenshots
+## Screenshots
 
-> *(Coming soon — will be added once the visualizer is complete)*
+> ![Comparing Kruskal and Prim's algorithm](images/compare.png)
+> ![Dijkstra's algorithm](images/dijkstra.png)
+> ![Dijkstra's algorithm](images/dijkstra_dark.png)
 
 ---
 
