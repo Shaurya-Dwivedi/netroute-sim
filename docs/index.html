@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="NetRoute Simulator — Visualize Kruskal, Prim, and Dijkstra network routing algorithms powered by WebAssembly."
+    />
+    <title>NetRoute Simulator</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- ===== Header ===== -->
+      <header class="header">
+        <div class="header__brand">
+          <div class="header__logo">NR</div>
+          <h1 class="header__title">NetRoute Sim</h1>
+        </div>
+        <div style="display: flex; gap: 16px; align-items: center">
+          <button
+            class="btn btn--secondary"
+            id="btn-theme-toggle"
+            style="padding: 4px 12px; font-size: 10px"
+          >
+            [☼] LIGHT_MODE
+          </button>
+        </div>
+      </header>
+
+      <!-- ===== Main Distributed Layout ===== -->
+      <div class="layout-grid">
+        <!-- ===== LEFT PANEL ===== -->
+        <aside class="panel-left">
+          <!-- Network Topology -->
+          <div class="section-card">
+            <div class="section-card__title">TOPOLOGY_CTRL</div>
+            <div class="btn-group">
+              <button class="btn btn--secondary" id="btn-add-router">
+                + ADD_NODE
+              </button>
+              <button class="btn btn--secondary" id="btn-connect">
+                > CONNECT_NODES
+              </button>
+              <button class="btn btn--danger" id="btn-clear">
+                [X] FLUSH_CANVAS
+              </button>
+            </div>
+          </div>
+
+          <!-- Packet Simulation -->
+          <div class="section-card">
+            <div class="section-card__title">PACKET_SIM</div>
+            <div class="selection-display">
+              <div class="selection-node">
+                <span class="selection-node__label">SRC_ID</span>
+                <span class="selection-node__value" id="pkt-src">--</span>
+              </div>
+              <span class="selection-arrow">>></span>
+              <div class="selection-node">
+                <span class="selection-node__label">DEST_ID</span>
+                <span class="selection-node__value" id="pkt-dest">--</span>
+              </div>
+            </div>
+            <p class="section-hint" id="pkt-hint">
+              AWAIT_INPUT: SELECT 2 NODES
+            </p>
+            <div class="btn-group" style="margin-top: 16px">
+              <button class="btn btn--primary" id="btn-send-packet" disabled>
+                TRANSMIT_PKT
+              </button>
+              <button class="btn btn--secondary" id="btn-clear-selection">
+                CLR_SELECTION
+              </button>
+            </div>
+          </div>
+
+          <!-- Stats slot — visible in compact mode only -->
+          <div id="side-stats-slot" class="side-slot section-card">
+            <div class="section-card__title">NET_STATS</div>
+          </div>
+        </aside>
+
+        <!-- ===== CENTER PANEL ===== -->
+        <main class="panel-center">
+          <!-- Top Bar: Generation Params -->
+          <div class="top-bar section-card">
+            <div class="section-card__title" style="margin-bottom: 8px">
+              GENERATOR_PARAMS
+            </div>
+            <div class="generator-controls">
+              <div class="slider-group">
+                <div class="slider-label">
+                  <span>NODES</span><span id="val-nodes">10</span>
+                </div>
+                <input
+                  type="range"
+                  id="slider-nodes"
+                  min="2"
+                  max="150"
+                  value="10"
+                />
+              </div>
+              <div class="slider-group">
+                <div class="slider-label">
+                  <span>DENSITY</span><span id="val-density">40%</span>
+                </div>
+                <input
+                  type="range"
+                  id="slider-density"
+                  min="10"
+                  max="100"
+                  value="40"
+                />
+              </div>
+              <div class="slider-group">
+                <div class="slider-label">
+                  <span>MAX_WEIGHT</span><span id="val-weight">20</span>
+                </div>
+                <input
+                  type="range"
+                  id="slider-weight"
+                  min="1"
+                  max="100"
+                  value="20"
+                />
+              </div>
+              <div class="slider-group">
+                <div class="slider-label">
+                  <span>ANIM_SPEED</span><span id="val-speed">5×</span>
+                </div>
+                <input
+                  type="range"
+                  id="slider-speed"
+                  min="1"
+                  max="10"
+                  value="5"
+                />
+              </div>
+              <button class="btn btn--primary generator-btn" id="btn-generate">
+                EXECUTE // GENERATE
+              </button>
+            </div>
+          </div>
+
+          <!-- Canvas Area -->
+          <div class="canvas-row" id="canvas-row">
+            <!-- Single / Left Panel -->
+            <div class="canvas-panel" id="panel-main">
+              <div class="canvas-panel__header">
+                <span class="canvas-panel__title" id="panel-main-title"
+                  >NET_GRAPH // MAIN</span
+                >
+                <span class="canvas-panel__badge" id="panel-main-badge"></span>
+              </div>
+              <div class="canvas-panel__body">
+                <canvas id="canvas-main"></canvas>
+              </div>
+            </div>
+
+            <!-- Right Panel (compare mode only) -->
+            <div class="canvas-panel canvas-panel--hidden" id="panel-compare">
+              <div class="canvas-panel__header">
+                <span class="canvas-panel__title">PRIM_ALGO // MST</span>
+                <span class="canvas-panel__badge">CMP</span>
+              </div>
+              <div class="canvas-panel__body">
+                <canvas id="canvas-compare"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- Resizer Handle -->
+          <div class="horizontal-resizer" id="resizer-bottom"></div>
+
+          <!-- Bottom Bar: Stats & Logs -->
+          <div class="bottom-bar" id="bottom-bar">
+            <div class="stats-row">
+              <div class="stat-card">
+                <div class="stat-card__info">
+                  <span class="stat-card__label">ACTIVE_NODES</span>
+                  <span class="stat-card__value" id="stat-nodes">0</span>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-card__info">
+                  <span class="stat-card__label">ACTIVE_LINKS</span>
+                  <span class="stat-card__value" id="stat-links">0</span>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-card__info">
+                  <span class="stat-card__label">SYS_COST</span>
+                  <span class="stat-card__value" id="stat-cost">--</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- System Logs -->
+            <div class="section-card logger-card">
+              <div class="section-card__title">SYS_LOGS</div>
+              <div class="terminal" id="terminal-output"></div>
+            </div>
+          </div>
+        </main>
+
+        <!-- ===== RIGHT PANEL ===== -->
+        <aside class="panel-right">
+          <!-- Optimization Algorithms -->
+          <div class="section-card">
+            <div class="section-card__title">OPTIMIZATION_ALGOS</div>
+            <div class="btn-group">
+              <button class="btn btn--algo" id="btn-kruskal">
+                > RUN_KRUSKAL (MST)
+              </button>
+              <button class="btn btn--algo" id="btn-prim">
+                > RUN_PRIM (MST)
+              </button>
+              <button class="btn btn--algo" id="btn-dijkstra">
+                > RUN_DIJKSTRA (SPF)
+              </button>
+            </div>
+            <div class="btn-group" style="margin-top: 16px">
+              <button class="btn btn--primary" id="btn-compare">
+                COMPARE // K_VS_P
+              </button>
+              <button
+                class="btn btn--primary"
+                id="btn-run-again"
+                style="display: none"
+              >
+                RETRY // LAST_ALGO
+              </button>
+            </div>
+          </div>
+
+          <!-- Logs slot — visible in compact mode only -->
+          <div id="side-logs-slot" class="side-slot"></div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- Dijkstra Modal -->
+    <div class="modal-overlay" id="dijkstra-modal">
+      <div class="modal">
+        <div class="modal__title">DIJKSTRA_SPF // INPUT</div>
+        <div class="modal__field">
+          <label for="modal-src">SRC_ID</label>
+          <input type="number" id="modal-src" placeholder="0" min="0" />
+        </div>
+        <div class="modal__field">
+          <label for="modal-dest">DEST_ID</label>
+          <input type="number" id="modal-dest" placeholder="0" min="0" />
+        </div>
+        <div class="modal__actions">
+          <button class="btn btn--secondary" id="modal-cancel">ABORT</button>
+          <button class="btn btn--primary" id="modal-run">EXECUTE</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="netroute.js"></script>
+    <script src="wasm_brdige.js?v=2"></script>
+    <script src="app.js?v=3"></script>
+  </body>
+</html>
