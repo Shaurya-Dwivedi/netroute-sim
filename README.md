@@ -226,7 +226,7 @@ The live demo lets you:
 - [x] WASM bridge & Emscripten build
 - [x] Frontend Canvas visualizer
 - [x] Side-by-side animation comparison
-- [ ] Host on GitHub Pages
+- [x] Host on GitHub Pages
 
 ---
 
