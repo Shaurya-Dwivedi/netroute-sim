@@ -2068,6 +2068,32 @@
      Boot
      ---------------------------------------------------------- */
   function init() {
+    // --- Theme: default light, persist via localStorage ---
+    const savedTheme = localStorage.getItem("netroute-theme");
+    const themeToggleBtn = document.getElementById("btn-theme-toggle");
+
+    function applyTheme(theme) {
+      if (theme === "light") {
+        document.body.classList.add("light-theme");
+        if (themeToggleBtn) themeToggleBtn.textContent = "[☽] DARK_MODE";
+      } else {
+        document.body.classList.remove("light-theme");
+        if (themeToggleBtn) themeToggleBtn.textContent = "[☼] LIGHT_MODE";
+      }
+      localStorage.setItem("netroute-theme", theme);
+      redrawAll();
+    }
+
+    // Default to light if no preference saved
+    applyTheme(savedTheme || "light");
+
+    if (themeToggleBtn) {
+      themeToggleBtn.addEventListener("click", () => {
+        const isCurrentlyLight = document.body.classList.contains("light-theme");
+        applyTheme(isCurrentlyLight ? "dark" : "light");
+      });
+    }
+
     setupSliders();
 
     btnAddRouter.addEventListener("click", () =>
